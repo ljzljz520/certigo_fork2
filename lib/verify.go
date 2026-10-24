@@ -20,7 +20,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -37,11 +36,30 @@ type simpleVerifyCert struct {
 	signatureAlgorithm x509.SignatureAlgorithm
 }
 
+// SimpleOCSPResult is the OCSP conclusion for one validation path. The
+// certificate each status binds to is the leaf certificate of the
+// corresponding entry in SimpleVerification.Chains.
+type SimpleOCSPResult struct {
+	// Issuer is the common name of the issuer used on that path.
+	Issuer string `json:"issuer,omitempty"`
+	// WasStapled is true when the checked bytes came from a TLS staple.
+	WasStapled bool `json:"was_stapled,omitempty"`
+	// Skipped is true when no OCSP responder was available on the path.
+	Skipped bool `json:"skipped,omitempty"`
+	// Status is the verified, current OCSP response, when one was obtained.
+	Status *ocsp.Response `json:"ocsp_response,omitempty"`
+	// Error explains why no trustworthy, current status was obtained.
+	Error string `json:"ocsp_error,omitempty"`
+}
+
 type SimpleVerification struct {
-	Error          string               `json:"error,omitempty"`
+	Error string `json:"error,omitempty"`
+	// The OCSP* fields summarize the order-independent aggregate across all
+	// validation paths; they are preserved for backwards compatibility.
 	OCSPStatus     *ocsp.Response       `json:"ocsp_response,omitempty"`
 	OCSPWasStapled bool                 `json:"ocsp_was_stapled,omitempty"`
 	OCSPError      string               `json:"ocsp_error,omitempty"`
+	OCSPResults    []SimpleOCSPResult   `json:"ocsp_results,omitempty"`
 	Chains         [][]simpleVerifyCert `json:"chains"`
 }
 
@@ -109,7 +127,12 @@ func caBundle(caPath string) (*x509.CertPool, error) {
 	return bundle, nil
 }
 
-func VerifyChain(certs []*x509.Certificate, ocspStaple []byte, expectedName, caPath string) SimpleVerification {
+// VerifyChain verifies the given certificate chain. When strictOCSP is true,
+// the strict revocation policy is enforced: a trusted "revoked" conclusion
+// fails verification, and a missing, expired, unauthorized or otherwise
+// non-current OCSP response cannot be treated as good. Without it, OCSP
+// findings are reported without changing the verification conclusion.
+func VerifyChain(certs []*x509.Certificate, ocspStaple []byte, expectedName, caPath string, strictOCSP bool) SimpleVerification {
 	result := SimpleVerification{
 		Chains:         [][]simpleVerifyCert{},
 		OCSPWasStapled: ocspStaple != nil,
@@ -161,14 +184,24 @@ func VerifyChain(certs []*x509.Certificate, ocspStaple []byte, expectedName, caP
 		}
 	}
 
-	for _, chain := range chains {
-		status, err := checkOCSP(chain, ocspStaple)
-		if err == nil {
-			result.OCSPStatus = status
+	// Run the OCSP check on every validated path, keeping each path's
+	// result, and collapse them into an order-independent aggregate.
+	ocspResults, ocspAggregate := checkOCSPForChains(chains, ocspStaple)
+
+	for i, chain := range chains {
+		ocspResult := SimpleOCSPResult{
+			Issuer:     ocspResults[i].issuerCN,
+			WasStapled: ocspResults[i].stapled,
 		}
-		if err != nil && !errors.Is(err, errSkippedRevocationCheck) {
-			result.OCSPError = err.Error()
+		switch {
+		case ocspResults[i].response != nil:
+			ocspResult.Status = ocspResults[i].response
+		case ocspResults[i].skipped:
+			ocspResult.Skipped = true
+		default:
+			ocspResult.Error = ocspResults[i].err.Error()
 		}
+		result.OCSPResults = append(result.OCSPResults, ocspResult)
 
 		aChain := []simpleVerifyCert{}
 		for _, cert := range chain {
@@ -182,6 +215,20 @@ func VerifyChain(certs []*x509.Certificate, ocspStaple []byte, expectedName, caP
 			aChain = append(aChain, aCert)
 		}
 		result.Chains = append(result.Chains, aChain)
+	}
+
+	// Populate the aggregate, backwards-compatible summary fields.
+	switch {
+	case ocspAggregate.response != nil:
+		result.OCSPStatus = ocspAggregate.response
+	case !ocspAggregate.skipped && ocspAggregate.err != nil:
+		result.OCSPError = ocspAggregate.err.Error()
+	}
+
+	if strictOCSP {
+		if err := strictOCSPVerificationError(ocspAggregate); err != nil {
+			result.Error = err.Error()
+		}
 	}
 	return result
 }

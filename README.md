@@ -79,6 +79,7 @@ Commands:
     -l, --first               Only display the first certificate. This flag can be paired with --json or --pem.
         --verify              Verify certificate chain.
         --expected-name       Name expected in the server TLS certificate. Defaults to name from SNI or, if SNI not overridden, the hostname to connect to.
+        --strict-ocsp         With --verify, fail on a trusted revoked status or when no current, authoritative OCSP status is available.
 
   verify --name=NAME [<flags>] [<file>]
     Verify a certificate chain from file/stdin against a name.
@@ -88,7 +89,15 @@ Commands:
     -n, --name=NAME          Server name to verify certificate against.
         --ca=CA              Path to CA bundle (system default if unspecified).
     -j, --json               Write output as machine-readable JSON format.
+        --strict-ocsp       Enforce the strict OCSP policy: fail verification on a trusted revoked status, and when no current, authoritative OCSP status is available (missing, expired or unauthorized response).
 ```
+
+By default, OCSP findings are reported but never change the verification result or
+exit code, for backwards compatibility. Passing `--strict-ocsp` enables an explicit
+strict revocation policy: the checked response must be signed by the issuer or an
+authorized OCSP responder, bind to the target leaf certificate, and be current; a
+trusted `revoked` status fails verification, and a missing, expired, or otherwise
+unusable response is not treated as `good`.
 
 ### Examples
 

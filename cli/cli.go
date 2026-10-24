@@ -58,14 +58,16 @@ var (
 	connectFirst              = connect.Flag("first", "Only display the first certificate. This flag can be paired with --json or --pem.").Short('l').Bool()
 	connectVerify             = connect.Flag("verify", "Verify certificate chain.").Bool()
 	connectVerifyExpectedName = connect.Flag("expected-name", "Name expected in the server TLS certificate. Defaults to name from SNI or, if SNI not overridden, the hostname to connect to.").String()
+	connectStrictOCSP         = connect.Flag("strict-ocsp", "With --verify, enforce the strict OCSP policy: fail on a trusted revoked status, and when no current, authoritative OCSP status is available (missing, expired or unauthorized response).").Bool()
 
-	verify         = app.Command("verify", "Verify a certificate chain from file/stdin against a name.")
-	verifyFile     = verify.Arg("file", "Certificate file to dump (or stdin if not specified).").ExistingFile()
-	verifyType     = verify.Flag("format", "Format of given input (PEM, DER, JCEKS, PKCS12; heuristic if missing).").Short('f').String()
-	verifyPassword = verify.Flag("password", "Password for PKCS12/JCEKS key stores (reads from TTY if missing).").Short('p').String()
-	verifyName     = verify.Flag("name", "Server name to verify certificate against.").Short('n').Required().String()
-	verifyCaPath   = verify.Flag("ca", "Path to CA bundle (system default if unspecified).").ExistingFile()
-	verifyJSON     = verify.Flag("json", "Write output as machine-readable JSON format.").Short('j').Bool()
+	verify           = app.Command("verify", "Verify a certificate chain from file/stdin against a name.")
+	verifyFile       = verify.Arg("file", "Certificate file to dump (or stdin if not specified).").ExistingFile()
+	verifyType       = verify.Flag("format", "Format of given input (PEM, DER, JCEKS, PKCS12; heuristic if missing).").Short('f').String()
+	verifyPassword   = verify.Flag("password", "Password for PKCS12/JCEKS key stores (reads from TTY if missing).").Short('p').String()
+	verifyName       = verify.Flag("name", "Server name to verify certificate against.").Short('n').Required().String()
+	verifyCaPath     = verify.Flag("ca", "Path to CA bundle (system default if unspecified).").ExistingFile()
+	verifyJSON       = verify.Flag("json", "Write output as machine-readable JSON format.").Short('j').Bool()
+	verifyStrictOCSP = verify.Flag("strict-ocsp", "Enforce the strict OCSP policy: fail verification on a trusted revoked status, and when no current, authoritative OCSP status is available (missing, expired or unauthorized response).").Bool()
 )
 
 // version overrides what --version prints. Leave it empty to print the
@@ -214,7 +216,7 @@ func Run(args []string, tty terminal.Terminal) int {
 			// Use the hostname/IP from the connect string
 			expectedNameInCertificate = strings.Split(*connectTo, ":")[0]
 		}
-		verifyResult := lib.VerifyChain(connState.PeerCertificates, connState.OCSPResponse, expectedNameInCertificate, *connectCaPath)
+		verifyResult := lib.VerifyChain(connState.PeerCertificates, connState.OCSPResponse, expectedNameInCertificate, *connectCaPath, *connectStrictOCSP)
 		result.VerifyResult = &verifyResult
 
 		certList := result.Certificates
@@ -265,7 +267,7 @@ func Run(args []string, tty terminal.Terminal) int {
 			return printErr("error parsing block: %s\n", strings.TrimSuffix(err.Error(), "\n"))
 		}
 
-		verifyResult := lib.VerifyChain(chain, nil, *verifyName, *verifyCaPath)
+		verifyResult := lib.VerifyChain(chain, nil, *verifyName, *verifyCaPath, *verifyStrictOCSP)
 		if *verifyJSON {
 			blob, _ := json.Marshal(verifyResult)
 			_, _ = fmt.Println(string(blob))
